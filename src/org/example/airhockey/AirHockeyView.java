@@ -18,25 +18,29 @@ import java.util.Random;
 public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback,Runnable {
 	private static final String TAG = "AirHockey";
 
-	private SurfaceHolder holder;//サーフェイスホルダー
-	private Thread        thread;//スレッド
+	private SurfaceHolder holder;
+	private Thread        thread;
 	private Context ctxt;
 
 	private Random rnd;
 	//Bitmap white, pink;
 	Bitmap mallet, puck;
 
-	boolean dragging, moved, goaled;
+	boolean dragging, moved, goaled, goaled_by_android;
 	int w, h;
-	private int gw = 144;
+	private int goal_width = 144;
 	
 	private int score_user, score_android;
 
+	private final double max_speed = 750;
+	private final int score_to_win = 10;
+	
 	private float bw = 5;
 	float puck_x, puck_y, puck_r, puck_vx, puck_vy;
 	float mallet_x, mallet_y, mallet_r;
 	float android_x, android_y, android_vx, android_vy;
 	float mallet_ofs_x, mallet_ofs_y;
+	float android_home_x, android_home_y;
 
 	long last_millis; 
 
@@ -52,9 +56,9 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 		mallet_x = w/2;
 		mallet_y = h - 40;
 
-		android_x = w/2;
-		android_y = 40;
-		android_vx = 100; android_vy = 0;
+		android_x = android_home_x = w/2;
+		android_y = android_home_y = 40;
+		android_vx = 200; android_vy = 0;
 
 		dragging = moved = goaled = false;
 	}
@@ -94,7 +98,7 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 	}
 
 	private double crossAtT(double ax0, double ay0, double ax1, double ay1, double ar,
-			double bx0, double by0, double bx1, double by1, double br) {
+							double bx0, double by0, double bx1, double by1, double br) {
 		return crossAtT(ax0, ay0, ax1 + (bx1 - bx0), ay1 + (by1 - by0), ar,
 				bx0, by0, br);
 	}
@@ -154,27 +158,79 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 		return -1;
 	}
 
-	private boolean move(float x, float y) {
+	private void autoMoveAndroid(double delta_t) {
+		android_x += android_vx * delta_t;
+		android_y += android_vy * delta_t;
+
+		double r1 = 6.0; // どのくらい迅速に追いつくか
+		double r2 = 0.3; // 0に近づけば反応が悪く、1.0に近づけば反応がよい
+		double dx = (puck_x - android_x)*r1;
+		if (dx > max_speed) dx = max_speed;
+		android_vx = (float)(android_vx*(1.0-r2) + dx*r2);
+				
+		/**
+		double aw = bw + mallet_r*2;
+		if (android_x < aw) {
+			android_x = (float)(aw + (aw - android_x));
+			android_vx = -android_vx;
+		} else if (android_x > w - aw) {
+			android_x = (float)((w - aw) - (android_x - (w - aw)));
+			android_vx = -android_vx;
+		}
+		if (android_y < aw) {
+			android_y = (float)(aw + (aw - android_y));
+			android_vy = -android_vy;
+		} else if (android_y > h - aw) {
+			android_y = (float)((h - aw) - (android_y - (h - aw)));
+			android_vy = -android_vy;
+		}
+		**/
+		float aw = bw + mallet_r*2;
+		if (android_x < aw) {
+			android_x = aw;
+			android_vx = 0;
+		} else if (android_x > w - aw) {
+			android_x = w - aw;
+			android_vx = 0;
+		}
+		if (android_y < aw) {
+			android_y = aw;
+			android_vy = 0;
+		} else if (android_y > h - aw) {
+			android_y = h - aw;
+			android_vy = 0;
+		}
+	}
+	
+	// マレット移動
+	private boolean moveMallet(float x, float y) {
 		double max_mallet_x = x - mallet_ofs_x,
-		max_mallet_y = y - mallet_ofs_y;
+				max_mallet_y = y - mallet_ofs_y;
 		long millis = SystemClock.elapsedRealtime();
 		double delta_t = 0.001 * (millis - last_millis);
 		last_millis = millis;
 		double max_puck_x = puck_x + puck_vx * delta_t,
 		       max_puck_y = puck_y + puck_vy * delta_t;
+		double max_android_x = android_x + android_vx * delta_t,
+	       		max_android_y = android_y + android_vy * delta_t;
 		Log.d(TAG, "[B] delta_t = "+ delta_t);
 
 		double t = crossAtT(mallet_x, mallet_y, max_mallet_x, max_mallet_y, mallet_r,
 				puck_x, puck_y, max_puck_x, max_puck_y, puck_r);
 		moved = true;
+		
+		boolean rv = false; // 返り値
+		
 		if (t < 1e-3) { // <0
 			// no cross
 			mallet_x = (float)max_mallet_x;
 			mallet_y = (float)max_mallet_y;
 			puck_x = (float)max_puck_x;
 			puck_y = (float)max_puck_y;
-			
-			return true;
+//			android_x = (float)max_android_x;
+//			android_y = (float)max_android_y;
+			autoMoveAndroid(delta_t);
+			rv = true;
 		} else {
 			// crossed
 			double mallet_dx = (max_mallet_x - mallet_x)*(1.0 - t)/delta_t,
@@ -184,6 +240,9 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 			puck_y = (float)(puck_y + (max_puck_y - puck_y)*t);
 			mallet_x = (float)(mallet_x + (max_mallet_x - mallet_x)*t);
 			mallet_y = (float)(mallet_y + (max_mallet_y - mallet_y)*t);
+//			android_x = (float)(android_x + (max_android_x - android_x)*t);
+//			android_y = (float)(android_y + (max_android_y - android_y)*t);
+			autoMoveAndroid(delta_t*t);
 
 			/*
 			puck_x = (float)(puck_x + (puck_vx - puck_x)*t);
@@ -199,12 +258,22 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 			puck_vx = (float)(ir * Math.cos(out) + mallet_dx/2);
 			puck_vy = (float)(ir * Math.sin(out) + mallet_dy/2);
 
+			double puck_v = hypot(puck_vx,puck_vy);
+			if (puck_v > max_speed) {
+				puck_vx *= (max_speed / puck_v);
+				puck_vy *= (max_speed / puck_v);
+			}
+			
 			Log.d(TAG, "HIT, t="+t);
 			vibrate();
-			return false;
 		}
-	}
+		
+		// こちらに追随
+		//android_x = (float)(android_home_x + (mallet_x - android_home_x)*0.666);
+		//android_y = android_home_y;
 
+		return rv;
+	}
 
 	@Override
 	public boolean onTouchEvent(MotionEvent evt) {
@@ -238,7 +307,7 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 					x = evt.getHistoricalX(i);
 					y = evt.getHistoricalY(i);
 					Log.d(TAG, "  "+ i +") "+ x + ", " + y);
-					if (y < h/2+mallet_r || !move(x, y)) dragging = false;
+					if (y < h/2+mallet_r || !moveMallet(x, y)) dragging = false;
 				}
 				if (!dragging) break;
 			}
@@ -247,7 +316,7 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 				x = evt.getX();
 				y = evt.getY();
 				Log.d(TAG, "  *) "+ x + ", " + y);
-				if (y < h/2+mallet_r || !move(x, y)) dragging = false;
+				if (y < h/2+mallet_r || !moveMallet(x, y)) dragging = false;
 			}
 
 			return true;
@@ -258,7 +327,7 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 			x = evt.getX();
 			y = evt.getY();
 			Log.d(TAG, "ACTION_UP " + x + "," + y);
-			if (y < h/2+mallet_r || !move(x, y)) dragging = false;
+			if (y < h/2+mallet_r || !moveMallet(x, y)) dragging = false;
 
 			return true;
 		default:
@@ -280,202 +349,261 @@ public class AirHockeyView extends SurfaceView implements SurfaceHolder.Callback
 	//サーフェイスの変更
 	public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) { }
 
+	private void awaySide(double delta_t) {
+		double max_android_x = android_x + android_vx * delta_t,
+				max_android_y = android_y + android_vy * delta_t;
+		double max_puck_x = puck_x + puck_vx * delta_t,
+				max_puck_y = puck_y + puck_vy * delta_t;
+
+		double t = crossAtT(puck_x, puck_y, max_puck_x, max_puck_y, puck_r,
+							android_x, android_y, max_android_x, max_android_y, mallet_r);
+		if (t < 1e-3) { // <0
+			// no cross
+			puck_x = (float)max_puck_x;
+			puck_y = (float)max_puck_y;
+		} else {
+			double ax = android_x + (max_android_x - android_x)*t,
+					ay = android_y + (max_android_y - android_y)*t,
+					px = puck_x + (max_puck_x - puck_x)*t,
+					py = puck_y + (max_puck_y - puck_y)*t;
+			double mid_x = (ax + px)/2, mid_y = (ay + py)/2;
+			double theta = Math.atan2(py - ay, px - ax);
+			puck_x = (float)(mid_x + puck_r * Math.cos(theta)); 
+			puck_y = (float)(mid_y + puck_r * Math.sin(theta));
+
+			double in = Math.atan2(-puck_vy, -puck_vx);
+			double m = Math.atan2(puck_y - android_y, puck_x - android_x);
+			double ir = hypot(puck_vx, puck_vy);
+			double out = m*2 - in; // out - m = m - in
+
+			puck_vx = (float)(ir * Math.cos(out));;
+			puck_vy = (float)(ir * Math.sin(out));
+		}
+//		android_x = (float)max_android_x;
+//		android_y = (float)max_android_y;
+		autoMoveAndroid(delta_t);
+
+		// 補正
+		if (hypot(android_x - puck_x, android_y - puck_y) < mallet_r + puck_r) {
+			double theta = Math.atan2(android_y - puck_y, android_x - puck_x);
+			double mid_x = (android_x + puck_x)/2, mid_y = (android_y + puck_y)/2;
+			android_x = (float)(mid_x + (mallet_r * 1.001) * Math.cos(theta));
+			android_y = (float)(mid_y + (mallet_r * 1.001) * Math.sin(theta));
+			puck_x = (float)(mid_x - (puck_r * 1.001) * Math.cos(theta));
+			puck_y = (float)(mid_y - (puck_r * 1.001) * Math.sin(theta));
+		}
+
+		if (goaled) android_vx = android_vy = 0; // stop android when goaled
+	}
+	
+	private void homeSide(double delta_t) {
+		double max_puck_x = puck_x + puck_vx * delta_t,
+				max_puck_y = puck_y + puck_vy * delta_t;
+		//Log.d(TAG, "[C] Δt = "+ 0.001 * (millis - last_millis));
+
+		double t = crossAtT(puck_x, puck_y, max_puck_x, max_puck_y, puck_r,
+							mallet_x, mallet_y, mallet_r);
+		if (t < 1e-3) { // <0
+			// no cross
+			puck_x = (float)max_puck_x;
+			puck_y = (float)max_puck_y;
+		} else {
+			// crossed
+			double in = Math.atan2(-puck_vy, -puck_vx);
+			double ir = hypot(puck_vx, puck_vy);
+			double m = Math.atan2(puck_y - mallet_y, puck_x - mallet_x);
+			double out = m*2 - in; // out - m = m - in
+
+			puck_x = (float)(puck_x + (max_puck_x - (double)puck_x)*t);
+			puck_y = (float)(puck_y + (max_puck_y - (double)puck_y)*t);
+
+			puck_vx = (float)(ir * Math.cos(out));
+			puck_vy = (float)(ir * Math.sin(out));
+			// puck_vx = -puck_vx; puck_vy = -puck_vy; // これは嘘
+			Log.d(TAG, "HIT, t="+t);
+			vibrate();
+		}
+
+		autoMoveAndroid(delta_t);
+
+		// 補正
+		if (hypot(mallet_x - puck_x, mallet_y - puck_y) < mallet_r + puck_r) {
+			double theta = Math.atan2(mallet_y - puck_y, mallet_x - puck_x);
+			double mid_x = (mallet_x + puck_x)/2, mid_y = (mallet_y + puck_y)/2;
+			mallet_x = (float)(mid_x + (mallet_r * 1.001) * Math.cos(theta));
+			mallet_y = (float)(mid_y + (mallet_r * 1.001) * Math.sin(theta));
+			puck_x = (float)(mid_x - (puck_r * 1.001) * Math.cos(theta));
+			puck_y = (float)(mid_y - (puck_r * 1.001) * Math.sin(theta));
+		}
+	}
+	
+	private float getTextWidth(String txt, Paint p) {
+		float[] widths = new float[txt.length()];
+		int letters = p.getTextWidths(txt, widths);
+		float width = 0;
+		for(int i=0;i<letters;i++) width += widths[i];
+		return width;
+	}
+
+	// パックの跳ね返り
+	private void boundCheckOnWall() {
+		float bwr = bw + puck_r;
+		// サイドライン
+		while (true) {
+			if (puck_x <= bwr) {
+				puck_x = bwr + (bwr - puck_x);
+				puck_vx = -puck_vx;
+			} else if (puck_x >= w - bwr) {
+				puck_x = (w - bwr) - (puck_x - (w - bwr));
+				puck_vx = -puck_vx;
+			} else {
+				break;
+			}
+		}
+		
+		// ゴールライン
+		while (true) {
+			if (puck_y <= bwr) {
+				if (w/2-goal_width/2+puck_r < puck_x && puck_x < w/2+goal_width/2-puck_r) {
+					Log.d(TAG,"ANDROID!");
+					goaled = true;
+					goaled_by_android = true;
+					score_user++;
+					break;
+				} else {
+					puck_y = bwr + (bwr - puck_y);
+					puck_vy = -puck_vy;
+				}
+			} else if (puck_y >= h - bwr) {
+				if (w/2-goal_width/2+puck_r < puck_x && puck_x < w/2+goal_width/2-puck_r) {
+					Log.d(TAG,"USER!");
+					goaled = true;
+					goaled_by_android = false;
+					score_android++;
+					break;
+				} else {
+					puck_y = (h - bwr) - (puck_y - (h - bwr));
+					puck_vy = -puck_vy;
+				}
+			} else {
+				break;
+			}
+		}
+	}
+	
 	//スレッドの処理
 	public void run() {                      
 		Canvas canvas;
-		while(thread!=null) {
+
+		// Paintオブジェクトを準備
+		Paint paint = new Paint();
+		paint.setAntiAlias(true);
+		paint.setTextSize(10);
+		paint.setColor(0xFFFFFFFF);
+		//paint.setFlags(flags)
+		paint.setStyle(Paint.Style.STROKE);
+
+		Paint fillpaint = new Paint();
+	//	fillpaint.setAntiAlias(true);
+	//	fillpaint.setTextSize(10);
+		fillpaint.setColor(0xFF00FFFF);
+		fillpaint.setStyle(Paint.Style.FILL);
+
+		Paint bigletter = new Paint();
+		bigletter.setAntiAlias(true);
+		bigletter.setTextSize(64);
+		bigletter.setColor(0xFFFFFFFF);
+
+		while (thread != null) {
 			//ロック
-			canvas=holder.lockCanvas();
+			canvas = holder.lockCanvas();
 
 			//描画
 			canvas.drawColor(0xFF666666); // Color.WHITE);
 
-			Paint paint = new Paint();
-			paint.setAntiAlias(true);
-			paint.setTextSize(10);
-			paint.setColor(0xFFFFFFFF);
-			//paint.setFlags(flags)
-			paint.setStyle(Paint.Style.STROKE);
-
-			Paint bigletter = new Paint();
-			bigletter.setAntiAlias(true);
-			bigletter.setTextSize(64);
-			bigletter.setColor(0xFFFFFFFF);
-
+			// 前回からの経過時間(Δt)
 			long millis = SystemClock.elapsedRealtime();
 			double delta_t = 0.001 * (millis - last_millis);
 			last_millis = millis;
+			
+			// Android側のヒット判定
 			if (!moved) {
-				double max_puck_x = puck_x + puck_vx * delta_t,
-				       max_puck_y = puck_y + puck_vy * delta_t;
-				//Log.d(TAG, "[C] Δt = "+ 0.001 * (millis - last_millis));
+				if (puck_y < h/2)
+					awaySide(delta_t);
+				else
+					homeSide(delta_t);
 
-				double t = crossAtT(puck_x, puck_y, max_puck_x, max_puck_y, puck_r,
-						mallet_x, mallet_y, mallet_r);
-				if (t < 1e-3) { // <0
-					// no cross
-					puck_x = (float)max_puck_x;
-					puck_y = (float)max_puck_y;
-				} else {
-					// crossed
-					double in = Math.atan2(-puck_vy, -puck_vx);
-					double ir = hypot(puck_vx, puck_vy);
-					double m = Math.atan2(puck_y - mallet_y, puck_x - mallet_x);
-					double out = m*2 - in; // out - m = m - in
-
-					puck_x = (float)(puck_x + (max_puck_x - (double)puck_x)*t);
-					puck_y = (float)(puck_y + (max_puck_y - (double)puck_y)*t);
-
-					puck_vx = (float)(ir * Math.cos(out));
-					puck_vy = (float)(ir * Math.sin(out));
-					// puck_vx = -puck_vx; puck_vy = -puck_vy; // これは嘘
-					Log.d(TAG, "HIT, t="+t);
-					vibrate();
+				double puck_v = hypot(puck_vx,puck_vy);
+				if (puck_v > max_speed) {
+					puck_vx *= (max_speed / puck_v);
+					puck_vy *= (max_speed / puck_v);
 				}
 			}
 			
-			// android!
-			if (puck_y < h/2) {
-				double max_android_x = android_x + android_vx * delta_t,
-				       max_android_y = android_y + android_vy * delta_t;
-				double max_puck_x = puck_x + puck_vx * delta_t,
-			           max_puck_y = puck_y + puck_vy * delta_t;
 			
-				double t = crossAtT(puck_x, puck_y, max_puck_x, max_puck_y, puck_r,
-						            android_x, android_y, max_android_x, max_android_y, mallet_r);
-				if (t > 0) {
-					double ax = android_x + (max_android_x - android_x)*t,
-						   ay = android_y + (max_android_y - android_y)*t,
-						   px = puck_x + (max_puck_x - puck_x)*t,
-						   py = puck_y + (max_puck_y - puck_y)*t;
-					double mid_x = (ax + px)/2, mid_y = (ay + py)/2;
-					double theta = Math.atan2(py - ay, px - ax);
-					puck_x = (float)(mid_x + puck_r * Math.cos(theta)); 
-					puck_y = (float)(mid_y + puck_r * Math.sin(theta));
-					
-					double in = Math.atan2(-puck_vy, -puck_vx);
-					double m = Math.atan2(puck_y - android_y, puck_x - android_x);
-					double ir = hypot(puck_vx, puck_vy);
-					double out = m*2 - in; // out - m = m - in
+			// 壁に当たったら跳ね返る
+			boundCheckOnWall();
 
-					puck_vx = (float)(ir * Math.cos(out));;
-					puck_vy = (float)(ir * Math.sin(out));
-				}
-				android_x = (float)max_android_x;
-				android_y = (float)max_android_y;
-				
-				double aw = bw + mallet_r*2;
-				if (android_x < aw) {
-					android_x = (float)(aw + (aw - android_x));
-					android_vx = -android_vx;
-				} else if (android_x > w - aw) {
-					android_x = (float)((w - aw) - (android_x - (w - aw)));
-					android_vx = -android_vx;
-				}
-				if (android_y < aw) {
-					android_y = (float)(aw + (aw - android_y));
-					android_vy = -android_vy;
-				} else if (android_y > h - aw) {
-					android_y = (float)((h - aw) - (android_y - (h - aw)));
-					android_vy = -android_vy;
-				}
-				
-				if (goaled) android_vx = android_vy = 0;
-			}
-
-			// 補正
-			if (hypot(mallet_x - puck_x, mallet_y - puck_y) < mallet_r + puck_r) {
-				double theta = Math.atan2(mallet_y - puck_y, mallet_x - puck_x);
-				double mid_x = (mallet_x + puck_x)/2, mid_y = (mallet_y + puck_y)/2;
-				mallet_x = (float)(mid_x + (mallet_r * 1.001) * Math.cos(theta));
-				mallet_y = (float)(mid_y + (mallet_r * 1.001) * Math.sin(theta));
-				puck_x = (float)(mid_x - (puck_r * 1.001) * Math.cos(theta));
-				puck_y = (float)(mid_y - (puck_r * 1.001) * Math.sin(theta));
-			}
-
-			float bwr = bw + puck_r;
-			// side
-			while (true) {
-				if (puck_x <= bwr) {
-					puck_x = bwr + (bwr - puck_x);
-					puck_vx = -puck_vx;
-				} else if (puck_x >= w - bwr) {
-					puck_x = (w - bwr) - (puck_x - (w - bwr));
-					puck_vx = -puck_vx;
-				} else {
-					break;
-				}
-			}
-			// goal
-			while (true) {
-				if (puck_y <= bwr) {
-					if (w/2-gw/2+puck_r < puck_x && puck_x < w/2+gw/2-puck_r) {
-						Log.d(TAG,"GOAL THERE");
-						goaled = true;
-						score_user++;
-						break;
-					} else {
-						puck_y = bwr + (bwr - puck_y);
-						puck_vy = -puck_vy;
-					}
-				} else if (puck_y >= h - bwr) {
-					if (w/2-gw/2+puck_r < puck_x && puck_x < w/2+gw/2-puck_r) {
-						Log.d(TAG,"GOAL HERE");
-						goaled = true;
-						score_android++;
-						break;
-					} else {
-						puck_y = (h - bwr) - (puck_y - (h - bwr));
-						puck_vy = -puck_vy;
-					}
-				} else {
-					break;
-				}
-			}
-
-			if (!goaled) {
-				canvas.drawBitmap(puck, puck_x - puck_r, puck_y - puck_r, null);
-			}
+			if (!goaled) canvas.drawBitmap(puck, puck_x - puck_r, puck_y - puck_r, null);
 			canvas.drawBitmap(mallet, mallet_x - mallet_r, mallet_y - mallet_r, null);
 			canvas.drawBitmap(mallet, android_x - mallet_r, android_y - mallet_r, null);
 
-			//canvas.drawText("o",0,1, px,py, paint);
-			//px+=1; py+=1;
-
-			//int w = this.getWidth(), h = this.getHeight();
-			// canvas.drawLine(0,0, 100,100, paint);
-			// たて
+			// サイドライン
 			canvas.drawLine(bw,bw, bw,h-bw, paint);
 			canvas.drawLine(w-bw,bw, w-bw,h-bw, paint);
-			// よこ
-			canvas.drawLine(bw,bw, w/2-gw/2,bw, paint);
-			canvas.drawCircle(w/2-gw/2+1,bw,2,paint);
-			canvas.drawCircle(w/2+gw/2-1,bw,2,paint);
-			canvas.drawLine(w/2+gw/2,bw, w-bw,bw, paint);
+
+			// ゴールライン（away side）
+			canvas.drawLine(bw,bw, w/2-goal_width/2,bw, paint);
+			if (goaled && goaled_by_android) {
+				canvas.drawCircle(w/2-goal_width/2+1,bw,2,fillpaint);
+				canvas.drawCircle(w/2+goal_width/2-1,bw,2,fillpaint);
+			}
+			canvas.drawCircle(w/2-goal_width/2+1,bw,2,paint);
+			canvas.drawCircle(w/2+goal_width/2-1,bw,2,paint);
+			canvas.drawLine(w/2+goal_width/2,bw, w-bw,bw, paint);
 			
-			canvas.drawLine(bw,h/2, w-bw,h/2, paint); // centre
+			// センターライン
+			canvas.drawLine(bw,h/2, w-bw,h/2, paint);
 			
-			canvas.drawLine(bw,h-bw, w/2-gw/2,h-bw, paint);
-			canvas.drawCircle(w/2-gw/2+1,h-bw,2,paint);
-			canvas.drawCircle(w/2+gw/2-1,h-bw,2,paint);
-			canvas.drawLine(w/2+gw/2,h-bw, w-bw,h-bw, paint);
+			// ゴールライン（home side）
+			canvas.drawLine(bw,h-bw, w/2-goal_width/2,h-bw, paint);
+			if (goaled && !goaled_by_android) {
+				canvas.drawCircle(w/2-goal_width/2+1,h-bw,2,fillpaint);
+				canvas.drawCircle(w/2+goal_width/2-1,h-bw,2,fillpaint);
+			}
+			canvas.drawCircle(w/2-goal_width/2+1,h-bw,2,paint);
+			canvas.drawCircle(w/2+goal_width/2-1,h-bw,2,paint);
+			canvas.drawLine(w/2+goal_width/2,h-bw, w-bw,h-bw, paint);
 
 			if (goaled) {
 				String score_str = "" + score_user + "-" + score_android;
-				
-				float[] widths = new float[score_str.length()];
-				int letters = bigletter.getTextWidths(score_str, widths);
-				float width = 0;
-				for(int i=0;i<letters;i++) width += widths[i];
+				float width = getTextWidth(score_str, bigletter);
 				canvas.drawText(score_str, 0, score_str.length(), w/2-width/2,h/2-32, bigletter);
+				
+				if (score_user == score_to_win || score_android == score_to_win) {
+					final String msg = (score_user == score_to_win) ? "YOU WIN!!" : "ANDROID WINS!!";
+					
+					Paint letter = new Paint();
+					letter.setAntiAlias(true);
+					letter.setTextSize(32);
+					letter.setColor(0xFFFFFF00);
+					float msg_width = getTextWidth(msg, letter);
+					canvas.drawText(msg, 0, msg.length(), w/2-msg_width/2,h/2+32, letter);
+				}
 			}
 			
 			//アンロック
 			holder.unlockCanvasAndPost(canvas);
 
 			if (goaled) {
-				try { Thread.sleep(1000); }
-				catch (Exception e) { }
+				if (score_user == score_to_win || score_android == score_to_win) {
+					score_user = score_android = 0;
+					try { Thread.sleep(3500); }
+					catch (Exception e) { }
+				} else {
+					try { Thread.sleep(1000); }
+					catch (Exception e) { }
+				}
 				reset();
 			} else {
 				//スリープ
